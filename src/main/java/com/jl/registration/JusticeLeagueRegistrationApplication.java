@@ -1,11 +1,12 @@
 package com.jl.registration;
 
+import com.jl.registration.constants.AppConstants;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.KafkaStreams;
-import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.Topology;
 import org.apache.kafka.streams.kstream.*;
 
 import java.util.Arrays;
@@ -23,6 +24,26 @@ public class JusticeLeagueRegistrationApplication {
         new JusticeLeagueRegistrationApplication().process();
     }
 
+    public Topology createTopology() {
+        StreamsBuilder kStreamBuilder = new StreamsBuilder();
+
+        GlobalKTable<String, String> superHeroTable = kStreamBuilder.globalTable(AppConstants.SUPERHERO_POWER_TOPIC);
+
+        KStream<String, String> superHeroRegistrationStream = kStreamBuilder.stream(AppConstants.JL_REG_INPUT_TOPIC);
+
+
+        KTable<String, Long> filteredStream = superHeroRegistrationStream
+                .selectKey((key, value) -> value)
+                .join(superHeroTable, (key, value) -> key,
+                        (registration, superHeroPower) -> superHeroPower)
+                .flatMapValues(value -> Arrays.asList(value.split(":")))
+                .selectKey((key, value) -> value).groupByKey().count(Materialized.as("JLPowerCounter"));
+
+        filteredStream.toStream().to(AppConstants.JL_FINAL_TOPIC, Produced.with(Serdes.String(), Serdes.Long()));
+
+        return kStreamBuilder.build();
+    }
+
     private void process() {
         Properties kafkaProperties = new Properties();
         kafkaProperties.put(StreamsConfig.APPLICATION_ID_CONFIG, "jl-reg-app");
@@ -33,25 +54,7 @@ public class JusticeLeagueRegistrationApplication {
         kafkaProperties.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, "0");
         kafkaProperties.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, StreamsConfig.EXACTLY_ONCE);
 
-        StreamsBuilder kStreamBuilder = new StreamsBuilder();
-
-        GlobalKTable<String, String> superHeroTable = kStreamBuilder.globalTable("superhero-powers-topic");
-
-        KStream<String, String> superHeroRegistrationStream = kStreamBuilder.stream("jl-reg-input-topic");
-
-
-        KTable<String, Long> filteredStream = superHeroRegistrationStream
-                .selectKey((key, value) -> value)
-                .join(superHeroTable, (key, value) -> key,
-                        (registration, superHeroPower) -> superHeroPower)
-                .flatMapValues(value-> Arrays.asList(value.split(":")))
-                .selectKey((key,value)->value).groupByKey().count(Materialized.as("JLPowerCounter"));
-
-        filteredStream.toStream().to("jl-final-topic",Produced.with(Serdes.String(),Serdes.Long()));
-
-
-
-        KafkaStreams kafkaStreams = new KafkaStreams(kStreamBuilder.build(), kafkaProperties);
+        KafkaStreams kafkaStreams = new KafkaStreams(createTopology(), kafkaProperties);
         kafkaStreams.cleanUp();
         kafkaStreams.start();
 
